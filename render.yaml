@@ -1,0 +1,26 @@
+# Render Blueprint — deploys backend + frontend from a single repo push.
+# In Render: New → Blueprint → connect this repo. Adjust as needed.
+services:
+  # ---- FastAPI backend ----
+  - type: web
+    name: nexus-api
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ENVIRONMENT
+        value: production
+      - key: CORS_ORIGINS
+        sync: false # set to your frontend URL after first deploy
+
+  # ---- Next.js frontend ----
+  - type: web
+    name: nexus-frontend
+    runtime: node
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NEXT_PUBLIC_API_URL
+        sync: false # set to your nexus-api URL after first deploy
