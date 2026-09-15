@@ -1,3 +1,4 @@
+import uuid
 from collections.abc import AsyncGenerator
 
 from sqlalchemy.ext.asyncio import (
@@ -5,6 +6,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
 
@@ -12,11 +14,7 @@ settings = get_settings()
 
 
 def _normalize_async_url(url: str) -> str:
-    """Ensure the URL uses the asyncpg driver.
-
-    Supabase/most tools hand out `postgresql://...` (which SQLAlchemy routes to
-    the sync psycopg2 driver). We force the async driver so a plain paste works.
-    """
+    """Force the asyncpg driver so a plain `postgresql://` paste works."""
     if url.startswith("postgresql+asyncpg://"):
         return url
     if url.startswith("postgresql://"):
@@ -26,22 +24,31 @@ def _normalize_async_url(url: str) -> str:
     return url
 
 
-# Engine is created only when DATABASE_URL is configured, so the app still
-# boots (and the /api/health chip works) before the DB is wired up.
 engine = None
 AsyncSessionLocal: async_sessionmaker[AsyncSession] | None = None
 
 if settings.database_url:
     db_url = _normalize_async_url(settings.database_url)
+    is_local = "localhost" in db_url or "127.0.0.1" in db_url
 
-    connect_args: dict = {"statement_cache_size": 0}  # pgbouncer/transaction-pooler safe
-    # Supabase (and most hosted Postgres) require SSL; local dev usually doesn't.
-    if "localhost" not in db_url and "127.0.0.1" not in db_url:
+    connect_args: dict = {
+        # Supabase transaction pooler (pgbouncer) does NOT support prepared
+        # statements. Disable asyncpg's statement cache...
+        "statement_cache_size": 0,
+        # ...and give each prepared statement a unique name so pgbouncer never
+        # sees a duplicate across pooled connections.
+        "prepared_statement_name_func": lambda: f"__asyncpg_{uuid.uuid4()}__",
+    }
+    if not is_local:
         connect_args["ssl"] = "require"
 
     engine = create_async_engine(
         db_url,
-        pool_pre_ping=True,
+        # NullPool: don't reuse connections across requests — required with the
+        # pgbouncer transaction pooler.
+        poolclass=NullPool,
+        # Disable SQLAlchemy's own prepared-statement cache too.
+        execution_options={"compiled_cache": None},
         connect_args=connect_args,
     )
     AsyncSessionLocal = async_sessionmaker(
